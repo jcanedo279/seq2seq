@@ -1,11 +1,16 @@
+import os
+import time
 import math
 import random as rd
 import copy
+
 
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, PathPatch
 from mpl_toolkits.mplot3d import Axes3D
 import mpl_toolkits.mplot3d.art3d as art3d
+from matplotlib.animation import FuncAnimation
+from matplotlib.animation import PillowWriter
 
 import noise
 import numpy as np
@@ -16,13 +21,31 @@ from collections import deque
 import copy
 
 
+
 class GridWorld:
     class GridAgent:
-        def __init__(self, loc=(1, 1, 2), dir="E", world_scale=(1, 1, 1), ):
+        def __init__(self, loc=(1, 1, 2), dir="E", world_scale=(1, 1, 1)):
+            ## GridWorld parameters
             self.loc, self.dir = loc, dir
-            world_width, world_depth, world_height = world_scale
+            self.world_scale = world_scale
             
-            cards = ["Top", "W", "E", "S", "N"] ## <- cardinal dirs
+            cards = ["TOP", "W", "E", "S", "N"] # <- cardinal dirs
+            world_width, world_depth, world_height = world_scale
+            self.sizes = [
+                (world_width, world_depth),
+                (world_depth, world_height),
+                (world_depth, world_height),
+                (world_width, world_height),
+                (world_width,  world_height)
+            ]
+            self.colors = [('blue', 'blue') if card==self.dir else ('gold', 'black') for card in cards]
+            self.z_dirs = ["z", "x", "x", "y", "y"]
+            
+            self.update_faces()
+            
+        def update_faces(self):
+            loc = self.loc
+            world_width, world_depth, world_height = self.world_scale
             locs = [
                 (loc[0] * world_width, loc[1] * world_depth), 
                 (loc[1] * world_depth, loc[2] * world_height),
@@ -30,17 +53,9 @@ class GridWorld:
                 (loc[0] * world_width, loc[2] * world_height),
                 (loc[0] * world_width, loc[2] * world_height),
             ]
-            sizes = [
-                (world_width, world_depth),
-                (world_depth, world_height),
-                (world_depth, world_height),
-                (world_width, world_height),
-                (world_width,  world_height)
-            ]
-            colors = [('blue', 'blue') if card==dir else ('gold', 'black') for card in cards]
             
-            self.faces = [Rectangle(loc, size[0], size[1], facecolor=color[0], edgecolor=color[1]) for loc, size, color in zip(locs, sizes, colors)]
-
+            self.faces = [Rectangle(loc, size[0], size[1], facecolor=color[0], edgecolor=color[1]) for loc, size, color in zip(locs, self.sizes, self.colors)]
+            
             self.zs = [
                 (loc[2]+1) * world_height,
                 loc[0] * world_width,
@@ -48,11 +63,6 @@ class GridWorld:
                 loc[1] * world_depth,
                 (loc[1]+1) * world_depth,
             ]
-            
-            self.z_dirs = ["z", "x", "x", "y", "y"]
-
-        def set_dir(self, dir):
-            self.dir = dir
 
     class GridElement:
         def __init__(self, loc, state, is_transparent, is_movable, label=None):
@@ -65,32 +75,157 @@ class GridWorld:
         self,
         config
     ):
+        self.continue_animation = True
+        self.fps = 1
+        
         self.val_to_col = {"ground": {0: "red", 1: "green", 2: "grey"}}
         
+        
+        self.right_dir_seq = {"N":"E", "E":"S", "S":"W", "W":"N"}
+        self.left_dir_seq = {"N":"W", "W":"S", "S":"E", "E":"N"}
+        self.turn_dir_seq = {"N":"S", "S":"N", "E":"W", "W":"E"}
+        
+        self.out_to_orth_dir_vect = {0: (1,1,1), 1: (-1,1,1), 2: (1,-1,1), 3: (-1,-1,1)}
+        self.dir_to_dir_vect = {"E": (1,0,0), "W": (-1,0,0), "N": (1,0,0), "S":(-1,0,0)}
+        
+        self.gen_ind = 0
         self.config = config
+        
+        current_time = time.localtime()
+        fitted_time_arr = time.strftime('%a, %d %b %Y %H:%M:%S GMT', current_time).split(' ')
+        local_time = fitted_time_arr[4]
+        local_date = f'{fitted_time_arr[2]}:{fitted_time_arr[1]}'
+        
+        self.output_path = f'out/environment_{local_date}_{local_time}.gif'
+        
+
+    def make_animation(self):
+        self.animating_figure = plt.figure()
+        # self.ax = plt.gca(projection="3d")
+        self.ax = plt.axes(projection="3d")
+        self.ax.axis('auto')
         
         self.gen_world()
         
         self.gen_agents()
         
-        self.pop_iter(display=True)
+        # self.pop_iter(display=True)
         
-    def hide_and_seek_score(self):
-        pass
+        self.anim = FuncAnimation(self.animating_figure, self.update_animation,
+                                    frames=self.gen_frames, init_func=self.init_plot(), repeat=False)
+        self.anim.save(self.output_path, writer=PillowWriter(fps=self.fps))
         
+        plt.close('all')
+        del self.animating_figure
+        
+    
+    def init_plot(self):
+        self.ax.cla()
+        
+    def gen_frames(self):
+        while (self.gen_ind < self.config['agent_config']['num_generations']) and self.continue_animation:
+            self.ax.cla()
+            yield self.gen_ind
+        yield StopIteration
+        
+    def update_animation(self, i):
+        print(f"\ranimating timestamp: {i}", end='')
+        # self.ax.cla()
+
+        agent_scores = self.hide_and_seek_score()
+        outputs = self.iter_agents_predict()
+        self.update_state(outputs)
+        for agent_ind, agent in enumerate(self.agents):
+            agent.view = self.gen_agent_view(agent)
+        self.display_world()
+
+        # # Format animation title
+        # title = f'dim={self.dim}, size={self.size}, gen={self.ptIndex}'
+        # self.ax.set_title(title)
+        # if not self.silence:
+        #     print(f'Generation {self.gen_ind} complete', end='\r')
+        self.gen_ind += 1
+        return self.ax
+    
     def pop_iter(self, display=False):
         num_generations = self.config['agent_config']['num_generations']
+        
         for gen_ind in range(num_generations):
-            for agent in self.agents:
-                dir = [0, 0, 0]
-                if agent.dir in {"W", "E"}:
-                    dir[0] = -1 if agent.dir == "W" else 1
-                if agent.dir in {"S", "N"}:
-                    dir[1] = -1 if agent.dir == "S" else 1
-                # agent.loc
+        
+            agent_scores = self.hide_and_seek_score()
+            outputs = self.iter_agents_predict()
+            self.update_state(outputs)
+            for ind, agent in enumerate(self.agents):
+                agent.view = self.gen_agent_view(agent)
             if display:
+                # fig = plt.figure()
+                # ax = fig.gca(projection="3d")
                 self.display_world()
-                plt.cla()
+        
+    def hide_and_seek_score(self):
+        agent_loc_to_ind = {agent.loc: agent_ind for agent_ind, agent in enumerate(self.agents)}
+        agent_scores = {
+            'scores': {agent.loc: 0 for agent in self.agents},
+            'penalties': {agent.loc: 0 for agent in self.agents}
+        }
+        for view_agent in self.agents:
+            view_agent_view = view_agent.view
+            for view_sweep in view_agent_view:
+                for loc in view_sweep:
+                    if loc in agent_loc_to_ind and loc != view_agent.loc:
+                        agent_scores['scores'][view_agent.loc] += 1
+                        agent_scores['penalties'][loc] += 1
+                        
+        diff_scores = [agent_scores['scores'][agent.loc]-agent_scores['penalties'][agent.loc] for agent in self.agents]
+        min_diff_score = min(diff_scores)
+        norm_diff_scores = [diff_score-min_diff_score for diff_score in diff_scores] if min_diff_score != 0 else diff_scores
+        
+        eul_scores = [(1-math.exp(-score)) for score in norm_diff_scores]
+        eul_score_sum = sum(eul_scores)
+        
+        eul_norm_scores = [eul_score/eul_score_sum for eul_score in eul_scores] if eul_score_sum != 0 else [0]*len(eul_scores) 
+        return eul_norm_scores
+    
+    def iter_agents_predict(self):
+        outputs = []
+        for agent in self.agents:
+            rand_dir = rd.choice([0, 1, 2, 3])
+            rand_loc = [rd.choice([-1,0,1]) for _ in range(3)]
+            outputs.append([rand_dir, rand_loc, 0])
+        return outputs
+            
+    
+    ## 
+    #  output[0] = {'', 'left', 'right', 'turn'}
+    #  output[1] = [{-1, 0, 1}, {-1, 0, 1}, {-1, 0, 1}]
+    #  output[2] = {'', 'grab', 'release'}
+    def update_state(self, outputs):
+        world_dim = self.config['world_config']['world_dim']
+        for output, agent in zip(outputs, self.agents):
+            out_dir, out_loc, out_state = output
+            new_orth_dir_vect = self.out_to_orth_dir_vect[out_dir]
+            new_dir_vect = (new_orth_dir_vect[0]*agent.dir_vect[0], new_orth_dir_vect[1]*agent.dir_vect[1], new_orth_dir_vect[2]*agent.dir_vect[2])
+            
+            new_loc = (agent.loc[0]+out_loc[0], agent.loc[1]+out_loc[1], agent.loc[2]+out_loc[2])
+            ## catch out of bounds
+            new_loc = (max(0,min(new_loc[0],world_dim[0]-1)), max(0,min(new_loc[1],world_dim[1]-1)), max(0,min(new_loc[2],world_dim[2]-1)))
+            ## bind agent to surface 
+            new_loc = new_loc if new_loc[2] == self.ground_grid[new_loc[1]][new_loc[0]]+1 else agent.loc
+            
+            new_dir = agent.dir
+            if out_dir == 1:
+                new_dir = self.left_dir_seq[new_dir]
+            elif out_dir == 2:
+                new_dir = self.right_dir_seq[new_dir]
+            elif out_dir == 3:
+                new_dir = self.turn_dir_seq[new_dir]
+            
+            agent.dir = new_dir
+            agent.dir_vect = new_dir_vect
+            agent.loc = new_loc
+            
+            agent.update_faces()
+
 
     def gen_world(self):
         world_dim = self.config['world_config']['world_dim']
@@ -131,6 +266,7 @@ class GridWorld:
                 self.GridElement((x, y, z), -2, False, True)
             )
             
+            
     def gen_agents(self):
         world_dim = self.config['world_config']['world_dim']
         self.agents = []
@@ -146,34 +282,36 @@ class GridWorld:
             rand_loc = (rand_loc[0], rand_loc[1], rand_loc[2])
             agent_locations.add(rand_loc)
             self.agents.append( self.GridAgent(loc=rand_loc, dir=rand_dir, world_scale=config['world_config']['world_scale']) )
+            self.agents[-1].view = self.gen_agent_view(self.agents[-1])
 
 
     def display_world(self):
-        world_dim, world_scale = self.config['world_config']['world_dim'], self.config['world_config']['world_scale']
-        
-        fig = plt.figure()
-        ax = fig.gca(projection="3d")
-
         ## Ground
-        self.display_ground(ax)
+        self.display_ground()
         ## Not Visible
-        self.display_elements(ax)
+        self.display_elements()
         ## Agent
-        self.display_agents(ax)
+        self.display_agents()
         ## Agent View
-        self.display_agent_views(ax)
+        self.display_agent_views()
+        
+        self.set_fig_extras()
+        
+        # return self.ax
 
-
-        ax.grid(False)
+        
+    def set_fig_extras(self):
+        world_dim, world_scale = self.config['world_config']['world_dim'], self.config['world_config']['world_scale']
+        self.ax.grid(False)
         max_bound = max(
             world_scale[0] * world_dim[0],
             world_scale[1] * world_dim[1],
             world_scale[2] * world_dim[2],
         )
-        ax.set_xlim3d(-world_scale[0], -world_scale[0] + max_bound)
-        ax.set_ylim3d(-world_scale[1], -world_scale[1] + max_bound)
-        ax.set_zlim3d(-world_scale[2], -world_scale[2] + max_bound)
-        plt.show()
+        self.ax.set_xlim3d(-world_scale[0], -world_scale[0] + max_bound)
+        self.ax.set_ylim3d(-world_scale[1], -world_scale[1] + max_bound)
+        self.ax.set_zlim3d(-world_scale[2], -world_scale[2] + max_bound)
+        
 
     #####################
     ### Display Block ###
@@ -207,93 +345,39 @@ class GridWorld:
             if loc[1] + 1 < world_dim[1]
             else None
         )
-        ### Top Element ###
-        if top_elem == None or top_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[0]*world_scale[0], loc[1]*world_scale[1]),
-                    world_scale[0],
-                    world_scale[1],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append((loc[2] + 1) * world_scale[2])
-            z_dirs.append("z")
-        ### Bottom Element ###
-        if bottom_elem == None or bottom_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[0]*world_scale[0], loc[1]*world_scale[1]),
-                    world_scale[0],
-                    world_scale[1],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append(loc[2] * world_scale[2])
-            z_dirs.append("z")
-        ### Left Element ###
-        if left_elem == None or left_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[1]*world_scale[1], loc[2]*world_scale[2]),
-                    world_scale[1],
-                    world_scale[2],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append(loc[0] * world_scale[2])
-            z_dirs.append("x")
-        ### Right Element ###
-        if right_elem == None or right_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[1]*world_scale[1], loc[2]*world_scale[2]),
-                    world_scale[1],
-                    world_scale[2],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append((loc[0] + 1) * world_scale[2])
-            z_dirs.append("x")
-        ### Back Element ###
-        if back_elem == None or back_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[0]*world_scale[0], loc[2]*world_scale[2]),
-                    world_scale[0],
-                    world_scale[2],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append((loc[1]) * world_scale[2])
-            z_dirs.append("y")
-        ### Front Element ###
-        if front_elem == None or front_elem.is_transparent:
-            faces.append(
-                Rectangle(
-                    (loc[0]*world_scale[0], loc[2]*world_scale[2]),
-                    world_scale[0],
-                    world_scale[2],
-                    facecolor=facecolor,
-                    edgecolor=edgecolor,
-                    alpha=alpha,
-                )
-            )
-            zs.append(((loc[1]) + 1) * world_scale[2])
-            z_dirs.append("y")
+        loc_vals = [
+            (loc[0]*world_scale[0], loc[1]*world_scale[1]),
+            (loc[0]*world_scale[0], loc[1]*world_scale[1]),
+            (loc[1]*world_scale[1], loc[2]*world_scale[2]),
+            (loc[1]*world_scale[1], loc[2]*world_scale[2]),
+            (loc[0]*world_scale[0], loc[2]*world_scale[2]),
+            (loc[0]*world_scale[0], loc[2]*world_scale[2]),
+        ]
+        world_scale_vals = [
+            (world_scale[0], world_scale[1]),
+            (world_scale[0], world_scale[1]),
+            (world_scale[1], world_scale[2]),
+            (world_scale[1], world_scale[2]),
+            (world_scale[0], world_scale[2])
+        ]
+        element_vals = [top_elem, bottom_elem, left_elem, right_elem, back_elem, front_elem]
+        z_vals = [
+            (loc[2] + 1) * world_scale[2],
+            loc[2] * world_scale[2],
+            loc[0] * world_scale[0],
+            (loc[0] + 1) * world_scale[0],
+            (loc[1]) * world_scale[1],
+            ((loc[1]) + 1) * world_scale[1]
+        ]
+        z_dir_vals = ['z', 'z', 'x', 'x', 'y', 'y']
+        
+        for elem, l, scale, z, z_dir in zip(element_vals, loc_vals, world_scale_vals, z_vals, z_dir_vals):
+            if elem == None or elem.is_transparent:
+                faces.append(Rectangle(l, scale[0], scale[1], facecolor=facecolor, edgecolor=edgecolor, alpha=alpha))
+                zs.append(z), z_dirs.append(z_dir)
         return faces, zs, z_dirs
 
-    def display_ground(self, ax):
+    def display_ground(self):
         for z_ind, layer in enumerate(self.world_layers):
             for y_ind, ground_line in enumerate(layer):
                 for x_ind, grid_elem in enumerate(ground_line):
@@ -303,26 +387,25 @@ class GridWorld:
                             (x_ind, y_ind, z_ind), facecolor=facecolor
                         )
                         for rect, z, z_dir in zip(faces, zs, z_dirs):
-                            ax.add_patch(rect)
+                            self.ax.add_patch(rect)
                             art3d.pathpatch_2d_to_3d(rect, z=z, zdir=z_dir)
 
-    def display_elements(self, ax):
+    def display_elements(self):
         for grid_object in self.not_visible:
             faces, zs, z_dirs = self.display_block(
                 (grid_object.loc[0], grid_object.loc[1], grid_object.loc[2]),
                 facecolor="black",
             )
             for rect, z, z_dir in zip(faces, zs, z_dirs):
-                ax.add_patch(rect)
+                self.ax.add_patch(rect)
                 art3d.pathpatch_2d_to_3d(rect, z=z, zdir=z_dir)
 
-    def display_agent_views(self, ax):
-        colors = ["purple", "yellow", "orange", "pink", "grey"]
-        for agent in self.agents:
+    def display_agent_views(self):
+        colors = ["purple", "yellow", "orange", "pink", "grey", "aqua", "peru", "fuchsia", "whitesmoke", "yellowgreen"]
+        for agent_ind, agent in enumerate(self.agents):
             agent_color = colors.pop()
-            agent_view = self.gen_agent_view(agent)
-            sweep_step = 0.5 / (len(agent_view))
-            for sweep_ind, view_sweep in enumerate(agent_view):
+            sweep_step = 0.5 / (len(agent.view))
+            for sweep_ind, view_sweep in enumerate(agent.view):
                 cur_step = 0.5 - sweep_step * sweep_ind
                 for loc in view_sweep:
                     if loc == agent.loc:
@@ -334,15 +417,15 @@ class GridWorld:
                         alpha=cur_step,
                     )
                     for rect, z, z_dir in zip(faces, zs, z_dirs):
-                        ax.add_patch(rect)
+                        self.ax.add_patch(rect)
                         art3d.pathpatch_2d_to_3d(rect, z=z, zdir=z_dir)
 
-    def display_agents(self, ax):
+    def display_agents(self):
         for agent in self.agents:
             faces, zs, z_dirs = agent.faces, agent.zs, agent.z_dirs
             for rect, z, z_dir in zip(faces, zs, z_dirs):
-                rect_copy = copy.copy(rect)
-                ax.add_patch(rect_copy)
+                rect_copy = copy.deepcopy(rect)
+                self.ax.add_patch(rect_copy)
                 art3d.pathpatch_2d_to_3d(rect_copy, z=z, zdir=z_dir)
 
     def gen_agent_view(self, agent, padded=False):
@@ -354,13 +437,14 @@ class GridWorld:
             y_view = cur_loc[1] + dir[1] + view_ind * dir_orth[1]
             # return (x_view, y_view, cur_loc[2] * self.world_height)
             return (x_view, y_view, cur_loc[2])
-
+        
         ## Calculate agent direction
         dir = [0, 0, 0]
         if agent.dir in {"W", "E"}:
             dir[0] = -1 if agent.dir == "W" else 1
         if agent.dir in {"S", "N"}:
             dir[1] = -1 if agent.dir == "S" else 1
+        agent.dir_vect = dir
         ## Calculate orthogonal agent direction
         dir_orth = [dir[1], dir[0], dir[2]]
         ## Calculate agent direction dot world_scale
@@ -401,7 +485,7 @@ class GridWorld:
         padded_view = [[cur_loc]]
 
         view_width = 1
-        while cur_loc[0] >= 0 and cur_loc[1] >= 0 and cur_loc[0] < world_dim[0] and cur_loc[1] < world_dim[1] and view_width <= max_agent_view_depth:
+        while view_width < max_agent_view_depth:
 
             ## Trace line of sight sweep from previous line of sight sweep
             def is_viewable(loc):
@@ -424,6 +508,7 @@ class GridWorld:
                 if (
                     loc[0] < 0 or loc[0] >= world_dim[0]
                     or loc[1] < 0 or loc[1] >= world_dim[1]
+                    or loc[2] < 0 or loc[2] >= world_dim[2]
                 ):
                     return True
                 
@@ -477,22 +562,22 @@ class GridWorld:
                 return False
 
             next_pos = []
-            for layer_ind in range(min(world_dim[2], a_loc[2]+max_agent_view_height)):
+            for layer_ind in range(a_loc[2]+1-max_agent_view_height, a_loc[2]+max_agent_view_height):
                 next_pos.extend(
                     [
                         view_ind_to_pos(
-                            view_ind,
-                            (cur_loc[0], cur_loc[1], layer_ind),
-                            dir,
-                            dir_orth,
-                        )
-                        for view_ind in range(-view_width, view_width + 1)
+                            view_ind, (cur_loc[0], cur_loc[1], layer_ind),
+                            dir, dir_orth
+                        ) for view_ind in range(-view_width, view_width + 1)
                     ]
                 )
 
             proc_pos = list(filter(lambda x: not is_viewable(x), next_pos))
+            
+            padded_pos = [(not is_viewable(x), x) for x in next_pos]
+            
             if padded:
-                padded_view.append(next_pos)
+                padded_view.append(padded_pos)
             elif not proc_pos:
                 break
 
@@ -503,6 +588,7 @@ class GridWorld:
 
             cur_loc = [cur_loc[0] + dir[0], cur_loc[1] + dir[1]]
         if padded:
+            padded_view[0] = [(True, padded_view[0][0])]
             return padded_view
         return view
 
@@ -542,7 +628,7 @@ class GridWorld:
 
 
 
-dim_x, dim_y, dim_z = 10, 5, 7
+dim_x, dim_y, dim_z = 20, 15, 8
 scale_x, scale_y, scale_z = 1, 1, 1
 
 
@@ -551,14 +637,14 @@ octaves = 2
 persistence = 1
 lacunarity = 2
 seed = 0
-num_ground_layers=2
+num_ground_layers=3
 
 
-num_agents = 2
+num_agents = 8
 max_agent_view_depth=5
 max_agent_view_height=3
 
-num_generations=2
+num_generations=8
 
 
 
@@ -596,5 +682,10 @@ config = {
 }
 
 
+def main():
+    griddy = GridWorld(config)
+    griddy.make_animation()
 
-griddy = GridWorld(config)
+
+if __name__ == "__main__":
+    main()

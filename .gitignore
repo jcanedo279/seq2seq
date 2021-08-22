@@ -127,3 +127,19 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# VSCode worspace
+.vscode/*
+
+# local
+**/.DS_Store*
+**.code-workspace
+
+out/*
+!out/.gitkeep
+!out/deprecated/.gitkeep
+
+checkpoints/*
+!checkpoints/.gitkeep
+
+
