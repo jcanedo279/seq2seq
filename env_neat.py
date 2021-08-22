@@ -1,18 +1,22 @@
-"""
-2-input XOR example -- this is most likely the simplest possible example.
-"""
-
 from __future__ import print_function
 import os
 import neat
 import numpy as np
+from wandb.sdk import wandb_config
 import visualize
+import math
 import copy
+import wandb
 from GridWorld import GridWorld
 
 
 class EnvWrapper:
     def __init__(self, config_env):
+        ## Initialize wandb
+        os.environ['WANDB_NOTEBOOK_NAME'] = 'OpenEndedEnv'
+        wandb.login()
+        
+        self.wandb_config = wandb_config
         
         self.possible_outputs = [
             ['', 'left', 'right', 'turn'],
@@ -36,6 +40,7 @@ class EnvWrapper:
         # current working directory.
         local_dir = os.path.dirname(__file__)
         config_path = os.path.join(local_dir, 'config-feedforward')
+        
         self.run(config_path)
     
     class Dummy:
@@ -75,13 +80,18 @@ class EnvWrapper:
             agent_view = self.env.gen_agent_view(agent, padded=True)
         
             
+            agent_locs = set([a.loc for a in self.env.agents])
             masked_view = []
-            # print('agent_view[1]', agent_view[1])
             for view_sweep in agent_view:
                 for view, loc in view_sweep:
                     x, y, z = loc
-                    element = self.env.world_layers[z][y][x] if view else self.Dummy(-99)
+                    # element = self.env.world_layers[z][y][x] if view else self.Dummy(-99)
+                    element =  self.env.world_layers[z][y][x] if view else self.Dummy(-99)
+                    element = self.Dummy(99) if (x,y,z) in agent_locs and (x,y,z) != agent.loc else element
+                    # element = self.Dummy(99) if (x,y,z) in agent_locs else self.env.world_layers[z][y][x]
+                    # element = element if view else self.Dummy(-99)
                     masked_view.append(float(element.state))
+            
             net = neat.nn.FeedForwardNetwork.create(genome, config)
             output = net.activate(masked_view)
             
@@ -118,10 +128,18 @@ class EnvWrapper:
             outputs[self.persistent_refs[id]] = output
             
         self.env.update_state(outputs)
-        agent_scores = self.env.hide_and_seek_score()
+        agent_scores = self.env.hide_and_seek_score_raw()
         
         for genome_id, genome in genomes:
             genome.fitness = agent_scores[self.persistent_refs[genome_id]]
+        
+        log_params = {
+            'avg_hide_and_seek_score': sum(agent_scores)/len(agent_scores),
+            'num_agents': self.config_wandb['agent_config']['num_agents'],
+            'num_generations': self.config_wandb['agent_config']['num_generations']
+        }
+          
+        wandb.log(log_params)
         
         self.env.gen_ind += 1
     
@@ -141,26 +159,48 @@ class EnvWrapper:
         config.num_inputs = view_size
         config.num_outputs = 13
         
-
-        # Create the population, which is the top-level object for a NEAT run.
-        p = neat.Population(config)
-
-        # Add a stdout reporter to show progress in the terminal.
-        p.add_reporter(neat.StdOutReporter(True))
-        stats = neat.StatisticsReporter()
-        p.add_reporter(stats)
-        p.add_reporter(neat.Checkpointer(gen_interval:=5, filename_prefix='checkpoints/neat-checkpoint-'))
-
-        # Run for up to 300 generations.
-        winner = p.run(self.eval_genomes, 30)
         
-        print(dir(winner))
+        run_context = wandb.init(project=os.environ['WANDB_NOTEBOOK_NAME'], config=self.config_env)
+        with run_context:
+            self.config_wandb = wandb.config
+
+            # Create the population, which is the top-level object for a NEAT run.
+            p = neat.Population(config)
+
+            # Add a stdout reporter to show progress in the terminal.
+            p.add_reporter(neat.StdOutReporter(True))
+            stats = neat.StatisticsReporter()
+            p.add_reporter(stats)
+            p.add_reporter(neat.Checkpointer(gen_interval:=5, filename_prefix='checkpoints/neat-checkpoint-'))
+
+            # Run for up to 300 generations.
+            winner = p.run(self.eval_genomes, self.config_env['agent_config']['num_generations'])
+            
+            # # Show output of the most fit genome against training data.
+            # print('\nOutput:')
+            # winner_net = neat.nn.FeedForwardNetwork.create(winner, config)
+            # for xi, xo in zip(xor_inputs, xor_outputs):
+            #     output = winner_net.activate(xi)
+            #     print("input {!r}, expected output {!r}, got {!r}".format(xi, xo, output))
+
+            node_names = {-(i+1): f'{i+1}' for i in range(view_size+1)}
+            node_names.update({i: f'{i}' for i in range(13)})
+            visualize.draw_net(config, winner, True, node_names=node_names)
+            visualize.plot_stats(stats, ylog=False, view=False)
+            visualize.plot_species(stats, view=False)
+
+            num_checks = math.floor(self.config_env['agent_config']['num_generations']/gen_interval)-1
+            p = neat.Checkpointer.restore_checkpoint(f'checkpoints/neat-checkpoint-{4+5*num_checks}')
+            p.run(self.eval_genomes, 10)
+            
+
+
 
 
 
 
 def main():
-    dim_x, dim_y, dim_z = 20, 15, 8
+    dim_x, dim_y, dim_z = 40, 40, 8
     scale_x, scale_y, scale_z = 1, 1, 1
 
 
@@ -172,13 +212,12 @@ def main():
     num_ground_layers = 3
 
 
-    num_agents = 10
+    num_agents = 50
     max_agent_view_depth = 5
     max_agent_view_height = 3
 
-    num_generations = 8
-
-
+    num_generations = 100
+    
 
     world_config = {
         'world_dim': (dim_x, dim_y, dim_z),
@@ -207,16 +246,18 @@ def main():
 
 
 
-    config = {
+    config_env = {
         'world_config': world_config,
         'world_terrain_config': world_terrain_config,
         'agent_config': agent_config
     }
-    
-    env_wrapper = EnvWrapper(config)
+    env_wrapper = EnvWrapper(config_env)
     env_wrapper.run('config-feedforward')
     
     
 
 if __name__ == '__main__':
     main()
+
+
+## TODO: create state that represents agents so that agents can process them in their view

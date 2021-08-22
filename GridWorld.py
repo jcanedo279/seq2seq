@@ -132,7 +132,7 @@ class GridWorld:
         print(f"\ranimating timestamp: {i}", end='')
         # self.ax.cla()
 
-        agent_scores = self.hide_and_seek_score()
+        agent_scores = self.hide_and_seek_score_rel()
         outputs = self.iter_agents_predict()
         self.update_state(outputs)
         for agent_ind, agent in enumerate(self.agents):
@@ -152,17 +152,35 @@ class GridWorld:
         
         for gen_ind in range(num_generations):
         
-            agent_scores = self.hide_and_seek_score()
+            agent_scores = self.hide_and_seek_score_rel()
             outputs = self.iter_agents_predict()
             self.update_state(outputs)
             for ind, agent in enumerate(self.agents):
                 agent.view = self.gen_agent_view(agent)
             if display:
-                # fig = plt.figure()
-                # ax = fig.gca(projection="3d")
                 self.display_world()
         
-    def hide_and_seek_score(self):
+    def hide_and_seek_score_raw(self):
+        agent_loc_to_ind = {agent.loc: agent_ind for agent_ind, agent in enumerate(self.agents)}
+        agent_scores = {
+            'scores': {agent.loc: 0 for agent in self.agents},
+            'penalties': {agent.loc: 0 for agent in self.agents}
+        }
+        for view_agent in self.agents:
+            view_agent_view = view_agent.view
+            for view_sweep in view_agent_view:
+                for loc in view_sweep:
+                    if loc in agent_loc_to_ind and loc != view_agent.loc:
+                        agent_scores['scores'][view_agent.loc] += 1
+                        agent_scores['penalties'][loc] += 1
+                        
+        diff_scores = [agent_scores['scores'][agent.loc]-agent_scores['penalties'][agent.loc] for agent in self.agents]
+        min_diff_score = min(diff_scores)
+        norm_diff_scores = [diff_score-min_diff_score for diff_score in diff_scores] if min_diff_score != 0 else diff_scores
+        return norm_diff_scores
+        
+        
+    def hide_and_seek_score_rel(self):
         agent_loc_to_ind = {agent.loc: agent_ind for agent_ind, agent in enumerate(self.agents)}
         agent_scores = {
             'scores': {agent.loc: 0 for agent in self.agents},
@@ -259,7 +277,8 @@ class GridWorld:
                 mat.append(line)
             self.world_layers.append(mat)
 
-        blocked_items = {(3, 1, 2), (3, 3, 2), (4, 3, 2)}
+        # blocked_items = {(3, 1, 2), (3, 3, 2), (4, 3, 2)}
+        blocked_items = {}
         self.not_visible = []
         for x, y, z in blocked_items:
             self.not_visible.append(
@@ -274,12 +293,14 @@ class GridWorld:
         agent_locations = set([(0,0,0)])
         for _ in range(self.config['agent_config']['num_agents']):
             rand_dir = rd.choice(dirs)
+            rand_dir = 'S'
             rand_loc = (0,0,0)
             while rand_loc in agent_locations:
                 new_loc = [rd.randint(0, world_dim[dim]-1) for dim in range(2)]
                 new_loc.append(self.ground_grid[rand_loc[1]][rand_loc[0]]+1)
                 rand_loc = (new_loc[0], new_loc[1], new_loc[2])
             rand_loc = (rand_loc[0], rand_loc[1], rand_loc[2])
+            rand_loc = (3, 3, 4)
             agent_locations.add(rand_loc)
             self.agents.append( self.GridAgent(loc=rand_loc, dir=rand_dir, world_scale=config['world_config']['world_scale']) )
             self.agents[-1].view = self.gen_agent_view(self.agents[-1])
@@ -296,6 +317,8 @@ class GridWorld:
         self.display_agent_views()
         
         self.set_fig_extras()
+        
+        plt.show()
         
         # return self.ax
 
@@ -628,7 +651,7 @@ class GridWorld:
 
 
 
-dim_x, dim_y, dim_z = 20, 15, 8
+dim_x, dim_y, dim_z = 7, 7, 8
 scale_x, scale_y, scale_z = 1, 1, 1
 
 
@@ -640,7 +663,7 @@ seed = 0
 num_ground_layers=3
 
 
-num_agents = 8
+num_agents = 1
 max_agent_view_depth=5
 max_agent_view_height=3
 

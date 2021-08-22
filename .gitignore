@@ -135,6 +135,8 @@ dmypy.json
 **/.DS_Store*
 **.code-workspace
 
+wandb/*
+
 out/*
 !out/.gitkeep
 !out/deprecated/.gitkeep
