@@ -1,11 +1,16 @@
 from __future__ import print_function
 
+import io
 import copy
 import warnings
+
+import wandb
 
 import graphviz
 import matplotlib.pyplot as plt
 import numpy as np
+
+from PIL import Image
 
 
 def plot_stats(statistics, ylog=False, view=False, filename='avg_fitness.svg'):
@@ -33,6 +38,12 @@ def plot_stats(statistics, ylog=False, view=False, filename='avg_fitness.svg'):
         plt.gca().set_yscale('symlog')
 
     plt.savefig(filename)
+    
+    fig = plt.gcf()
+    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    wandb.log({"Training Statistics": [wandb.Image(data, caption=None)]})
+    
     if view:
         plt.show()
 
@@ -106,6 +117,11 @@ def plot_species(statistics, view=False, filename='speciation.svg'):
     plt.xlabel("Generations")
 
     plt.savefig(filename)
+    
+    data = np.fromstring(fig.canvas.tostring_rgb(), dtype=np.uint8, sep='')
+    data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+    
+    wandb.log({"Speciation": [wandb.Image(data, caption=None)]})
 
     if view:
         plt.show()
